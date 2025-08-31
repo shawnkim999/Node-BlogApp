@@ -3,47 +3,90 @@ import prisma from "../lib/Prisma";
 import { User } from "../models/User";
 import { getCache, setCache, deleteCache } from "../services/redisService";
 
-export const getAllUsers = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const cachedUsers = await getCache<User[]>("users");
+export const getCurrentUser = async (req: Request, res: Response): Promise<void> => {
+    const userId = req.user?.userId;
+    const userCache = `user:me:${userId}`
 
-        if (cachedUsers) {
-            res.json(cachedUsers);
+    try {
+        const cachedUser = await getCache<User>(userCache);
+
+        if (cachedUser) {
+            res.json(cachedUser);
             return;
         }
         
-        const users = await prisma.user.findMany();
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                id: true,
+                username: true,
+                email: true,
+                createdAt: true
+            }
+        })
 
-        await setCache("users", users);
-        res.json(users);
-    } catch (error) {
-        console.error("Failed to get all users: ", error);
-        res.status(500).json({ error: "Failed to retrieve users" });
-    }
-}
-
-export const createUser = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const { username, email, password } = req.body as User;
-
-        if (!username || !email || !password) {
-            res.status(404).send("Missing required fields");
+        if (!user) {
+            res.status(404).json({ error: "User not found" });
             return;
         };
 
-        const newUser = await prisma.user.create({
+        await setCache(userCache, user);
+        res.json(user);
+    } catch (error) {
+        console.error("Failed to get user by ID: ", error);
+        res.status(500).json({ error: "Server error" });
+    }
+}
+
+export const updateUser = async (req:Request, res:Response): Promise<void> => {
+    const userId = Number(req.params.id);
+    const { username, email } = req.body;
+
+    if (req.user!.userId !== userId) {
+        res.status(403).json({ error: "Unauthorized to update this user" });
+        return;
+    }
+    try {
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
             data: {
                 username,
-                email,
-                password
+                email
+            },
+            select: {
+                id: true,
+                username: true,
+                email: true,
+                createdAt: true
             }
         });
 
-        await deleteCache("users");
-
-        res.send(201).json(newUser);
+        await deleteCache(`user:${userId}`);
+        await deleteCache(`user:me:${userId}`);
+        
+        res.json(updatedUser);
     } catch (error) {
-        console.error("Failed to create user: ", error);
-        res.status(500).json({ error: "Failed to create user" });
+        console.error("Failed to update user:", error);
+        res.status(500).json({ error: "Server error" });
+    }
+}
+
+export const deleteUser = async (req:Request, res:Response): Promise<void> => {
+    const userId = Number(req.params.id);
+
+    if (req.user!.userId !== userId) {
+        res.status(403).json({ error: "Unauthorized to delete this user" });
+        return;
+    }
+    try {
+        await prisma.user.delete({ where: { id:userId } });
+
+        await deleteCache(`user:${userId}`);
+        await deleteCache(`user:me:${userId}`);
+
+        res.status(204).send();
+    } catch (error) {
+        console.error("Failed to delete user:", error);
+        res.status(500).json({ error: "Server error" });
     }
 }
